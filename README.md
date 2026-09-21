@@ -2,13 +2,16 @@
 
 User-authenticated expense logging with categorization and monthly visualization.
 
-**Stack:** Node.js + Express + `node:sqlite` (built-in) + JWT + bcryptjs — Vanilla JS frontend + Chart.js
+**Stack:** Node.js + Express + `node:sqlite` (built-in) + JWT + bcryptjs — Vanilla JS frontend + Chart.js  
+**Live:** `npm start` → http://localhost:3000  
+**Repo:** https://github.com/praveenkumar21122006/expense-tracker
 
 ## Quick Start
 ```bash
 npm install
 npm start
 # http://localhost:3000
+# set JWT_SECRET in .env for production
 ```
 
 ## Features
@@ -19,7 +22,7 @@ npm start
 - **Visualization:**
   - Monthly bar chart (`/api/expenses/stats/monthly?year=YYYY`) — 12 months
   - Category doughnut (`/api/expenses/stats/category?month=YYYY-MM`)
-  - Summary cards (`/api/expenses/stats/summary`) — this month, vs last month, total
+  - Summary cards (`/api/expenses/stats/summary`) — this month vs last month, total
 
 ## API
 | Method | Path | Auth | Body |
@@ -35,7 +38,25 @@ npm start
 | GET | /api/expenses/stats/category | Bearer | — |
 | GET | /api/expenses/stats/summary | Bearer | — |
 
-DB file: `server/expense.db` (auto-created).
+DB file: `server/expense.db` (auto-created, gitignored).
 
 ## Frontend
 Single-page `public/` — Auth view → Dashboard with stats grid, Chart.js monthly + category charts, add/edit form, searchable/filtered table.
+
+## Deploy
+
+### Render (recommended for Node + SQLite)
+1. Connect repo to https://dashboard.render.com → New Web Service
+2. Build: `npm install`  Start: `npm start`  Node 22
+3. Env: `JWT_SECRET=<random>` `PORT=10000`
+4. Deploy — SQLite file is ephemeral; for persistence add Render Disk at `/opt/render/project/src/server`
+
+### Vercel
+1. `vercel --prod` — uses `vercel.json` (`server/server.js` → @vercel/node)
+2. Note: SQLite on Vercel is ephemeral ( /tmp ); swap to Postgres/Neon for persistence.
+
+### Railway / Fly.io
+Standard `npm start`, expose `$PORT`.
+
+## License
+MIT
