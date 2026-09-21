@@ -38,15 +38,50 @@ async function getSqlite() {
 // --- Blob JSON for Vercel (persistent across serverless) ---
 const BLOB_PATH = 'db.json';
 
+async function getBlobUrl() {
+  // Public store URL is deterministic: https://<store-id-without-prefix-lower>.public.blob.vercel-storage.com/db.json
+  // Try to derive from env, fallback to known URL for this project
+  const storeId = process.env.BLOB_STORE_ID || 'store_SzeSCeqA5jcoFycu';
+  const host = storeId.replace('store_','').toLowerCase();
+  // Known URL for this deployment (verified via list)
+  const known = 'https://szesceqa5jcofycu.public.blob.vercel-storage.com/db.json';
+  // Prefer derived but keep known as fallback
+  const url = `https://${host}.public.blob.vercel-storage.com/${BLOB_PATH}`;
+  return url === 'https://.public.blob.vercel-storage.com/db.json' ? known : url;
+}
+
 async function readBlob() {
+  // Try direct fetch first (strongly consistent, no list eventual consistency)
+  const url = await getBlobUrl();
+  try {
+    const res = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
+    if (res.ok) {
+      const text = await res.text();
+      if (text) {
+        const data = JSON.parse(text);
+        return {
+          users: data.users || [],
+          expenses: data.expenses || [],
+          nextUserId: data.nextUserId || (data.users.length ? Math.max(...data.users.map(u=>u.id))+1 : 1),
+          nextExpenseId: data.nextExpenseId || (data.expenses.length ? Math.max(...data.expenses.map(e=>e.id))+1 : 1)
+        };
+      }
+    }
+    if (res.status === 404) {
+      return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
+    }
+  } catch (e) {
+    console.error('readBlob direct fetch error', e.message);
+  }
+  // Fallback to list (eventual consistent)
   try {
     const { list } = await import('@vercel/blob');
     const { blobs } = await list({ prefix: BLOB_PATH, limit: 10 });
     const existing = blobs.find(b => b.pathname === BLOB_PATH);
     if (existing) {
-      const res = await fetch(existing.url, { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
+      const res2 = await fetch(existing.url, { cache: 'no-store' });
+      if (res2.ok) {
+        const data = await res2.json();
         return {
           users: data.users || [],
           expenses: data.expenses || [],
@@ -56,7 +91,7 @@ async function readBlob() {
       }
     }
   } catch (e) {
-    console.error('readBlob error', e.message);
+    console.error('readBlob list fallback error', e.message);
   }
   return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
 }
