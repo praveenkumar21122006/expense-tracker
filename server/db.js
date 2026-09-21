@@ -103,7 +103,8 @@ async function writeBlob(data) {
       access: 'public',
       allowOverwrite: true,
       contentType: 'application/json',
-      addRandomSuffix: false
+      addRandomSuffix: false,
+      cacheControlMaxAge: 0
     });
   } catch (e) {
     console.error('writeBlob error', e.message);
@@ -112,7 +113,8 @@ async function writeBlob(data) {
     await put(BLOB_PATH, JSON.stringify(data), {
       access: 'public',
       allowOverwrite: true,
-      addRandomSuffix: false
+      addRandomSuffix: false,
+      cacheControlMaxAge: 0
     });
   }
 }
