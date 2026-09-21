@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, 'expense.db');
+// Vercel has read-only filesystem except /tmp
+const dbPath = process.env.VERCEL ? path.join('/tmp', 'expense.db') : path.join(__dirname, 'expense.db');
 
 const db = new DatabaseSync(dbPath);
 
