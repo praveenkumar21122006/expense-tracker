@@ -51,37 +51,17 @@ async function getBlobUrl() {
 }
 
 async function readBlob() {
-  // Try direct fetch first (strongly consistent, no list eventual consistency)
-  const url = await getBlobUrl();
-  try {
-    const res = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
-    if (res.ok) {
-      const text = await res.text();
-      if (text) {
-        const data = JSON.parse(text);
-        return {
-          users: data.users || [],
-          expenses: data.expenses || [],
-          nextUserId: data.nextUserId || (data.users.length ? Math.max(...data.users.map(u=>u.id))+1 : 1),
-          nextExpenseId: data.nextExpenseId || (data.expenses.length ? Math.max(...data.expenses.map(e=>e.id))+1 : 1)
-        };
-      }
-    }
-    if (res.status === 404) {
-      return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
-    }
-  } catch (e) {
-    console.error('readBlob direct fetch error', e.message);
-  }
-  // Fallback to list (eventual consistent)
+  // Use list first (more consistent than direct fetch for newly written blobs)
   try {
     const { list } = await import('@vercel/blob');
     const { blobs } = await list({ prefix: BLOB_PATH, limit: 10 });
     const existing = blobs.find(b => b.pathname === BLOB_PATH);
     if (existing) {
-      const res2 = await fetch(existing.url, { cache: 'no-store' });
-      if (res2.ok) {
-        const data = await res2.json();
+      // Use downloadUrl with no-store to bypass CDN cache
+      const url = existing.downloadUrl || existing.url;
+      const res = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' } });
+      if (res.ok) {
+        const data = await res.json();
         return {
           users: data.users || [],
           expenses: data.expenses || [],
@@ -89,10 +69,26 @@ async function readBlob() {
           nextExpenseId: data.nextExpenseId || (data.expenses.length ? Math.max(...data.expenses.map(e=>e.id))+1 : 1)
         };
       }
+    } else {
+      return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
     }
   } catch (e) {
-    console.error('readBlob list fallback error', e.message);
+    console.error('readBlob list error', e.message);
   }
+  // Fallback to direct fetch
+  try {
+    const url = await getBlobUrl();
+    const res2 = await fetch(url, { cache: 'no-store' });
+    if (res2.ok) {
+      const data = await res2.json();
+      return {
+        users: data.users || [],
+        expenses: data.expenses || [],
+        nextUserId: data.nextUserId || (data.users.length ? Math.max(...data.users.map(u=>u.id))+1 : 1),
+        nextExpenseId: data.nextExpenseId || (data.expenses.length ? Math.max(...data.expenses.map(e=>e.id))+1 : 1)
+      };
+    }
+  } catch {}
   return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
 }
 
