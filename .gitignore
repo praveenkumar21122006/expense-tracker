@@ -6,3 +6,4 @@ server/*.db
 dist/
 *.log
 /tmp/
+.vercel
