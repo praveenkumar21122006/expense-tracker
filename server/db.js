@@ -35,29 +35,86 @@ async function getSqlite() {
   return sqliteDb;
 }
 
-// --- Blob JSON for Vercel (persistent across serverless) ---
+// --- Gist JSON for Vercel (strongly consistent) ---
 const BLOB_PATH = 'db.json';
 
+async function readGist() {
+  const gistId = process.env.GIST_ID;
+  const token = process.env.GITHUB_TOKEN || process.env.GIST_TOKEN;
+  if (!gistId || !token) return null;
+  try {
+    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': 'expense-tracker',
+        Accept: 'application/vnd.github+json'
+      },
+      cache: 'no-store'
+    });
+    if (!res.ok) {
+      console.error('readGist status', res.status, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    const file = data.files['db.json'];
+    if (!file) return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
+    let content = file.content;
+    if (file.truncated) {
+      const raw = await fetch(file.raw_url, { cache: 'no-store' });
+      content = await raw.text();
+    }
+    const parsed = JSON.parse(content);
+    return {
+      users: parsed.users || [],
+      expenses: parsed.expenses || [],
+      nextUserId: parsed.nextUserId || (parsed.users.length ? Math.max(...parsed.users.map(u=>u.id))+1 : 1),
+      nextExpenseId: parsed.nextExpenseId || (parsed.expenses.length ? Math.max(...parsed.expenses.map(e=>e.id))+1 : 1)
+    };
+  } catch (e) {
+    console.error('readGist error', e.message);
+    return null;
+  }
+}
+
+async function writeGist(data) {
+  const gistId = process.env.GIST_ID;
+  const token = process.env.GITHUB_TOKEN || process.env.GIST_TOKEN;
+  if (!gistId || !token) throw new Error('Gist not configured');
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'User-Agent': 'expense-tracker',
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      files: {
+        'db.json': { content: JSON.stringify(data) }
+      }
+    })
+  });
+  if (!res.ok) {
+    console.error('writeGist failed', res.status, await res.text());
+    throw new Error('writeGist failed');
+  }
+}
+
+// Fallback to Blob for Vercel if Gist not configured
 async function getBlobUrl() {
-  // Public store URL is deterministic: https://<store-id-without-prefix-lower>.public.blob.vercel-storage.com/db.json
-  // Try to derive from env, fallback to known URL for this project
   const storeId = process.env.BLOB_STORE_ID || 'store_SzeSCeqA5jcoFycu';
   const host = storeId.replace('store_','').toLowerCase();
-  // Known URL for this deployment (verified via list)
   const known = 'https://szesceqa5jcofycu.public.blob.vercel-storage.com/db.json';
-  // Prefer derived but keep known as fallback
   const url = `https://${host}.public.blob.vercel-storage.com/${BLOB_PATH}`;
   return url === 'https://.public.blob.vercel-storage.com/db.json' ? known : url;
 }
 
 async function readBlob() {
-  // Use list first (more consistent than direct fetch for newly written blobs)
   try {
     const { list } = await import('@vercel/blob');
     const { blobs } = await list({ prefix: BLOB_PATH, limit: 10 });
     const existing = blobs.find(b => b.pathname === BLOB_PATH);
     if (existing) {
-      // Use downloadUrl with no-store to bypass CDN cache
       const url = existing.downloadUrl || existing.url;
       const res = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' } });
       if (res.ok) {
@@ -75,7 +132,6 @@ async function readBlob() {
   } catch (e) {
     console.error('readBlob list error', e.message);
   }
-  // Fallback to direct fetch
   try {
     const url = await getBlobUrl();
     const res2 = await fetch(url, { cache: 'no-store' });
@@ -104,7 +160,6 @@ async function writeBlob(data) {
     });
   } catch (e) {
     console.error('writeBlob error', e.message);
-    // retry once with fresh import
     const { put } = await import('@vercel/blob');
     await put(BLOB_PATH, JSON.stringify(data), {
       access: 'public',
@@ -115,10 +170,27 @@ async function writeBlob(data) {
   }
 }
 
+// Unified read/write for Vercel (Gist preferred, Blob fallback)
+async function readVercelDb() {
+  if (process.env.GIST_ID && (process.env.GITHUB_TOKEN || process.env.GIST_TOKEN)) {
+    const data = await readGist();
+    if (data) return data;
+  }
+  return await readBlob();
+}
+
+async function writeVercelDb(data) {
+  if (process.env.GIST_ID && (process.env.GITHUB_TOKEN || process.env.GIST_TOKEN)) {
+    await writeGist(data);
+    return;
+  }
+  await writeBlob(data);
+}
+
 // --- Public API (works with both backends) ---
 export async function findUserByUsernameOrEmail(identifier) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     return db.users.find(u => u.username === identifier || u.email === identifier) || null;
   } else {
     const db = await getSqlite();
@@ -128,7 +200,7 @@ export async function findUserByUsernameOrEmail(identifier) {
 
 export async function findUserByUsernameOrEmailExists(username, email) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     return db.users.find(u => u.username === username || u.email === email) || null;
   } else {
     const db = await getSqlite();
@@ -138,7 +210,7 @@ export async function findUserByUsernameOrEmailExists(username, email) {
 
 export async function findUserById(id) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const u = db.users.find(x => x.id === Number(id));
     if (!u) return null;
     return { id: u.id, username: u.username, email: u.email, created_at: u.created_at };
@@ -150,15 +222,14 @@ export async function findUserById(id) {
 
 export async function createUser(username, email, passwordHash) {
   if (isVercel) {
-    const db = await readBlob();
-    // double-check exists (race protection)
+    const db = await readVercelDb();
     if (db.users.find(u => u.username === username || u.email === email)) {
       throw new Error('exists');
     }
     const id = db.nextUserId++;
     const user = { id, username, email, password: passwordHash, created_at: new Date().toISOString() };
     db.users.push(user);
-    await writeBlob(db);
+    await writeVercelDb(db);
     return { id, username, email };
   } else {
     const db = await getSqlite();
@@ -169,7 +240,7 @@ export async function createUser(username, email, passwordHash) {
 
 export async function getExpenses(userId, { month, category, search, year }) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     let rows = db.expenses.filter(e => e.user_id === Number(userId));
     if (month) rows = rows.filter(e => e.date.slice(0,7) === month);
     else if (year) rows = rows.filter(e => e.date.slice(0,4) === year);
@@ -192,11 +263,11 @@ export async function getExpenses(userId, { month, category, search, year }) {
 
 export async function createExpense(userId, amount, description, category, date) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const id = db.nextExpenseId++;
     const exp = { id, user_id: Number(userId), amount: Number(amount), description, category, date, created_at: new Date().toISOString() };
     db.expenses.push(exp);
-    await writeBlob(db);
+    await writeVercelDb(db);
     return exp;
   } else {
     const db = await getSqlite();
@@ -207,7 +278,7 @@ export async function createExpense(userId, amount, description, category, date)
 
 export async function findExpenseByIdForUser(id, userId) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     return db.expenses.find(e => e.id === Number(id) && e.user_id === Number(userId)) || null;
   } else {
     const db = await getSqlite();
@@ -217,14 +288,14 @@ export async function findExpenseByIdForUser(id, userId) {
 
 export async function updateExpense(id, userId, { amount, description, category, date }) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const exp = db.expenses.find(e => e.id === Number(id) && e.user_id === Number(userId));
     if (!exp) return null;
     if (amount != null) exp.amount = Number(amount);
     if (description != null) exp.description = description;
     if (category) exp.category = category;
     if (date) exp.date = date;
-    await writeBlob(db);
+    await writeVercelDb(db);
     return exp;
   } else {
     const db = await getSqlite();
@@ -235,11 +306,11 @@ export async function updateExpense(id, userId, { amount, description, category,
 
 export async function deleteExpense(id, userId) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const idx = db.expenses.findIndex(e => e.id === Number(id) && e.user_id === Number(userId));
     if (idx === -1) return 0;
     db.expenses.splice(idx, 1);
-    await writeBlob(db);
+    await writeVercelDb(db);
     return 1;
   } else {
     const db = await getSqlite();
@@ -250,7 +321,7 @@ export async function deleteExpense(id, userId) {
 
 export async function getMonthlyStats(userId, year) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const rows = db.expenses.filter(e => e.user_id === Number(userId) && e.date.slice(0,4) === year);
     const map = {};
     rows.forEach(e => {
@@ -280,7 +351,7 @@ export async function getMonthlyStats(userId, year) {
 
 export async function getCategoryStats(userId, month) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     let rows = db.expenses.filter(e => e.user_id === Number(userId));
     if (month) rows = rows.filter(e => e.date.slice(0,7) === month);
     const grouped = {};
@@ -306,7 +377,7 @@ export async function getCategoryStats(userId, month) {
 
 export async function getSummary(userId) {
   if (isVercel) {
-    const db = await readBlob();
+    const db = await readVercelDb();
     const now = new Date();
     const curMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     const prev = new Date(now.getFullYear(), now.getMonth()-1, 1);
