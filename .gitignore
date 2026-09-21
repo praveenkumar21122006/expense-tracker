@@ -1,0 +1,8 @@
+node_modules/
+server/expense.db
+server/*.db
+.env
+.DS_Store
+dist/
+*.log
+/tmp/

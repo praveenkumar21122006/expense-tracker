@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ExpenseTracker • Track Monthly Spending</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Auth View -->
+    <section id="auth-view" class="auth-wrapper">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <div class="logo">◈</div>
+          <h1>ExpenseTracker</h1>
+          <p>Log, categorize and visualize your monthly spending</p>
+        </div>
+        <div class="tabs">
+          <button id="tab-login" class="tab active">Login</button>
+          <button id="tab-register" class="tab">Register</button>
+        </div>
+        <form id="auth-form">
+          <div class="field">
+            <label>Username</label>
+            <input id="auth-username" type="text" placeholder="johndoe" required>
+          </div>
+          <div class="field" id="email-field" style="display:none">
+            <label>Email</label>
+            <input id="auth-email" type="email" placeholder="john@example.com">
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="auth-password" type="password" placeholder="••••••••" required>
+          </div>
+          <div id="auth-error" class="error"></div>
+          <button type="submit" class="btn primary full" id="auth-submit">Sign in →</button>
+        </form>
+        <p class="auth-hint">Demo: create any account — data is isolated per user.</p>
+      </div>
+      <div class="auth-visual">
+        <div class="visual-card">
+          <h3>Monthly Insights</h3>
+          <div class="mini-stats">
+            <div><span>$2,480</span><small>This month</small></div>
+            <div><span>—12%</span><small>vs last month</small></div>
+          </div>
+          <div class="bars">
+            <div style="height:30%"></div><div style="height:55%"></div><div style="height:40%"></div><div style="height:80%"></div><div style="height:65%"></div><div style="height:90%"></div>
+          </div>
+          <p>Categories • Food • Bills • Transport • Shopping</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section id="dashboard" style="display:none">
+      <nav class="topnav">
+        <div class="nav-left">
+          <div class="logo small">◈</div>
+          <strong>ExpenseTracker</strong>
+          <span class="badge" id="user-badge"></span>
+        </div>
+        <div class="nav-right">
+          <span id="user-email" class="muted"></span>
+          <button id="logout" class="btn ghost">Logout</button>
+        </div>
+      </nav>
+
+      <main class="container">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <small>This Month</small>
+            <h2 id="stat-current">$0.00</h2>
+            <span id="stat-change" class="trend"></span>
+          </div>
+          <div class="stat-card">
+            <small>Total Expenses</small>
+            <h2 id="stat-total">$0.00</h2>
+            <span class="muted" id="stat-count">0 transactions</span>
+          </div>
+          <div class="stat-card">
+            <small>Top Category</small>
+            <h2 id="stat-top">—</h2>
+            <span class="muted" id="stat-top-amt"></span>
+          </div>
+          <div class="stat-card accent">
+            <small>Budget Pulse</small>
+            <div class="progress-wrap"><div id="progress-bar" class="progress"></div></div>
+            <span class="muted" id="progress-label">Track monthly trend</span>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <h3>Monthly Spending</h3>
+              <select id="year-select"></select>
+            </div>
+            <canvas id="monthlyChart" height="220"></canvas>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h3>By Category</h3>
+              <input type="month" id="cat-month">
+            </div>
+            <canvas id="categoryChart" height="220"></canvas>
+            <div id="category-legend" class="legend"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>Add Expense</h3>
+            <form id="expense-form" class="expense-form">
+              <div class="row">
+                <div class="field flex1">
+                  <label>Amount ($)</label>
+                  <input id="exp-amount" type="number" step="0.01" min="0.01" placeholder="42.50" required>
+                </div>
+                <div class="field flex1">
+                  <label>Date</label>
+                  <input id="exp-date" type="date" required>
+                </div>
+              </div>
+              <div class="field">
+                <label>Category</label>
+                <select id="exp-category"></select>
+              </div>
+              <div class="field">
+                <label>Description</label>
+                <input id="exp-desc" type="text" placeholder="Grocery run, Uber, Netflix..." required>
+              </div>
+              <button type="submit" class="btn primary full" id="exp-submit">Add Expense</button>
+              <button type="button" class="btn ghost full" id="exp-cancel" style="display:none">Cancel edit</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>Recent Expenses</h3>
+              <div class="filters">
+                <select id="filter-cat"><option value="All">All categories</option></select>
+                <input type="month" id="filter-month">
+                <input type="search" id="filter-search" placeholder="Search...">
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
+                <tbody id="expense-list"></tbody>
+              </table>
+              <div id="empty-state" class="empty">No expenses yet. Add your first one!</div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+<script src="app.js"></script>
+</body>
+</html>
