@@ -6,7 +6,6 @@ const isVercel = !!process.env.VERCEL;
 
 // --- SQLite for local dev ---
 let sqliteDb = null;
-let sqliteReady = false;
 
 async function getSqlite() {
   if (sqliteDb) return sqliteDb;
@@ -38,81 +37,55 @@ async function getSqlite() {
 
 // --- Blob JSON for Vercel (persistent across serverless) ---
 const BLOB_PATH = 'db.json';
-let blobCache = null;
-let blobInit = null;
-let blobSaving = false;
 
-async function loadBlob() {
-  if (blobCache) return blobCache;
-  if (blobInit) return blobInit;
-  blobInit = (async () => {
-    try {
-      const { list, put } = await import('@vercel/blob');
-      // try to list existing db.json
-      const { blobs } = await list({ prefix: BLOB_PATH, limit: 1 });
-      const existing = blobs.find(b => b.pathname === BLOB_PATH);
-      if (existing) {
-        const res = await fetch(existing.url, { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          // ensure shape
-          blobCache = {
-            users: data.users || [],
-            expenses: data.expenses || [],
-            nextUserId: data.nextUserId || (Math.max(0, ...data.users.map(u=>u.id)) + 1) || 1,
-            nextExpenseId: data.nextExpenseId || (Math.max(0, ...data.expenses.map(e=>e.id)) + 1) || 1
-          };
-          return blobCache;
-        }
+async function readBlob() {
+  try {
+    const { list } = await import('@vercel/blob');
+    const { blobs } = await list({ prefix: BLOB_PATH, limit: 10 });
+    const existing = blobs.find(b => b.pathname === BLOB_PATH);
+    if (existing) {
+      const res = await fetch(existing.url, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          users: data.users || [],
+          expenses: data.expenses || [],
+          nextUserId: data.nextUserId || (data.users.length ? Math.max(...data.users.map(u=>u.id))+1 : 1),
+          nextExpenseId: data.nextExpenseId || (data.expenses.length ? Math.max(...data.expenses.map(e=>e.id))+1 : 1)
+        };
       }
-      // no existing, create empty
-      blobCache = { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
-      await saveBlob();
-      return blobCache;
-    } catch (e) {
-      console.error('loadBlob error', e);
-      blobCache = { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
-      return blobCache;
     }
-  })();
-  return blobInit;
+  } catch (e) {
+    console.error('readBlob error', e.message);
+  }
+  return { users: [], expenses: [], nextUserId: 1, nextExpenseId: 1 };
 }
 
-async function saveBlob() {
-  if (!blobCache) return;
-  // prevent concurrent saves from clobbering
-  if (blobSaving) {
-    // wait a bit and retry
-    await new Promise(r=>setTimeout(r, 50));
-    return saveBlob();
-  }
-  blobSaving = true;
+async function writeBlob(data) {
   try {
     const { put } = await import('@vercel/blob');
-    await put(BLOB_PATH, JSON.stringify(blobCache), {
+    await put(BLOB_PATH, JSON.stringify(data), {
       access: 'public',
       allowOverwrite: true,
-      contentType: 'application/json'
+      contentType: 'application/json',
+      addRandomSuffix: false
     });
   } catch (e) {
-    console.error('saveBlob error', e);
-    // fallback: try with private access
-    try {
-      const { put } = await import('@vercel/blob');
-      await put(BLOB_PATH, JSON.stringify(blobCache), {
-        access: 'public',
-        allowOverwrite: true
-      });
-    } catch {}
-  } finally {
-    blobSaving = false;
+    console.error('writeBlob error', e.message);
+    // retry once with fresh import
+    const { put } = await import('@vercel/blob');
+    await put(BLOB_PATH, JSON.stringify(data), {
+      access: 'public',
+      allowOverwrite: true,
+      addRandomSuffix: false
+    });
   }
 }
 
 // --- Public API (works with both backends) ---
 export async function findUserByUsernameOrEmail(identifier) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     return db.users.find(u => u.username === identifier || u.email === identifier) || null;
   } else {
     const db = await getSqlite();
@@ -122,7 +95,7 @@ export async function findUserByUsernameOrEmail(identifier) {
 
 export async function findUserByUsernameOrEmailExists(username, email) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     return db.users.find(u => u.username === username || u.email === email) || null;
   } else {
     const db = await getSqlite();
@@ -132,7 +105,7 @@ export async function findUserByUsernameOrEmailExists(username, email) {
 
 export async function findUserById(id) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const u = db.users.find(x => x.id === Number(id));
     if (!u) return null;
     return { id: u.id, username: u.username, email: u.email, created_at: u.created_at };
@@ -144,11 +117,15 @@ export async function findUserById(id) {
 
 export async function createUser(username, email, passwordHash) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
+    // double-check exists (race protection)
+    if (db.users.find(u => u.username === username || u.email === email)) {
+      throw new Error('exists');
+    }
     const id = db.nextUserId++;
     const user = { id, username, email, password: passwordHash, created_at: new Date().toISOString() };
     db.users.push(user);
-    await saveBlob();
+    await writeBlob(db);
     return { id, username, email };
   } else {
     const db = await getSqlite();
@@ -159,7 +136,7 @@ export async function createUser(username, email, passwordHash) {
 
 export async function getExpenses(userId, { month, category, search, year }) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     let rows = db.expenses.filter(e => e.user_id === Number(userId));
     if (month) rows = rows.filter(e => e.date.slice(0,7) === month);
     else if (year) rows = rows.filter(e => e.date.slice(0,4) === year);
@@ -182,11 +159,11 @@ export async function getExpenses(userId, { month, category, search, year }) {
 
 export async function createExpense(userId, amount, description, category, date) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const id = db.nextExpenseId++;
     const exp = { id, user_id: Number(userId), amount: Number(amount), description, category, date, created_at: new Date().toISOString() };
     db.expenses.push(exp);
-    await saveBlob();
+    await writeBlob(db);
     return exp;
   } else {
     const db = await getSqlite();
@@ -197,7 +174,7 @@ export async function createExpense(userId, amount, description, category, date)
 
 export async function findExpenseByIdForUser(id, userId) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     return db.expenses.find(e => e.id === Number(id) && e.user_id === Number(userId)) || null;
   } else {
     const db = await getSqlite();
@@ -207,14 +184,14 @@ export async function findExpenseByIdForUser(id, userId) {
 
 export async function updateExpense(id, userId, { amount, description, category, date }) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const exp = db.expenses.find(e => e.id === Number(id) && e.user_id === Number(userId));
     if (!exp) return null;
     if (amount != null) exp.amount = Number(amount);
     if (description != null) exp.description = description;
     if (category) exp.category = category;
     if (date) exp.date = date;
-    await saveBlob();
+    await writeBlob(db);
     return exp;
   } else {
     const db = await getSqlite();
@@ -225,11 +202,11 @@ export async function updateExpense(id, userId, { amount, description, category,
 
 export async function deleteExpense(id, userId) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const idx = db.expenses.findIndex(e => e.id === Number(id) && e.user_id === Number(userId));
     if (idx === -1) return 0;
     db.expenses.splice(idx, 1);
-    await saveBlob();
+    await writeBlob(db);
     return 1;
   } else {
     const db = await getSqlite();
@@ -240,7 +217,7 @@ export async function deleteExpense(id, userId) {
 
 export async function getMonthlyStats(userId, year) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const rows = db.expenses.filter(e => e.user_id === Number(userId) && e.date.slice(0,4) === year);
     const map = {};
     rows.forEach(e => {
@@ -270,7 +247,7 @@ export async function getMonthlyStats(userId, year) {
 
 export async function getCategoryStats(userId, month) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     let rows = db.expenses.filter(e => e.user_id === Number(userId));
     if (month) rows = rows.filter(e => e.date.slice(0,7) === month);
     const grouped = {};
@@ -296,7 +273,7 @@ export async function getCategoryStats(userId, month) {
 
 export async function getSummary(userId) {
   if (isVercel) {
-    const db = await loadBlob();
+    const db = await readBlob();
     const now = new Date();
     const curMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     const prev = new Date(now.getFullYear(), now.getMonth()-1, 1);
